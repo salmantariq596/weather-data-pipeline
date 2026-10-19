@@ -1,0 +1,47 @@
+{
+  "dashboard": {
+    "title": "Bahawalpur Weather Dashboard",
+    "panels": [
+      {
+        "title": "Temperature Over Time",
+        "type": "graph",
+        "targets": [
+          {
+            "rawSql": "SELECT fetched_at as time, temperature, feels_like FROM stg_weather_current ORDER BY fetched_at DESC LIMIT 100",
+            "format": "time_series"
+          }
+        ]
+      },
+      {
+        "title": "Humidity & Pressure",
+        "type": "graph",
+        "targets": [
+          {
+            "rawSql": "SELECT fetched_at as time, humidity_percent, pressure_hpa FROM stg_weather_current ORDER BY fetched_at DESC LIMIT 100",
+            "format": "time_series"
+          }
+        ]
+      },
+      {
+        "title": "Daily Temperature Range",
+        "type": "graph",
+        "targets": [
+          {
+            "rawSql": "SELECT date, min_temperature, max_temperature, avg_temperature FROM mart_daily_weather ORDER BY date DESC LIMIT 30",
+            "format": "table"
+          }
+        ]
+      },
+      {
+        "title": "Air Quality Index",
+        "type": "singlestat",
+        "targets": [
+          {
+            "rawSql": "SELECT aqi FROM stg_air_quality ORDER BY fetched_at DESC LIMIT 1",
+            "format": "table"
+          }
+        ]
+      }
+    ]
+  }
+}

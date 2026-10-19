@@ -1,0 +1,199 @@
+services:
+  # PostgreSQL - Main data warehouse
+  postgres:
+    image: postgres:15
+    container_name: weather_postgres
+    environment:
+      POSTGRES_USER: weather_user
+      POSTGRES_PASSWORD: weather_pass
+      POSTGRES_DB: weather_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U weather_user -d weather_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - weather_net
+
+  # Redis - Caching & task queue
+  redis:
+    image: redis:7-alpine
+    container_name: weather_redis
+    ports:
+      - "6379:6379"
+    networks:
+      - weather_net
+
+  # Airflow PostgreSQL
+  airflow_postgres:
+    image: postgres:15
+    container_name: airflow_postgres
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    volumes:
+      - airflow_postgres_data:/var/lib/postgresql/data
+    networks:
+      - weather_net
+
+  # Airflow Init
+  airflow_init:
+    build:
+      context: .
+      dockerfile: Dockerfile.airflow
+    container_name: airflow_init
+    depends_on:
+      - airflow_postgres
+    environment:
+      - AIRFLOW__CORE__EXECUTOR=LocalExecutor
+      - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://airflow:airflow@airflow_postgres/airflow
+      - AIRFLOW__CORE__FERNET_KEY=your_fernet_key_here
+      - AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION=true
+      - AIRFLOW__CORE__LOAD_EXAMPLES=false
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - ./scripts:/opt/airflow/scripts
+    entrypoint: >
+      bash -c "
+        airflow db init &&
+        airflow users create --username admin --password admin --firstname Admin --lastname User --role Admin --email admin@example.com 2>/dev/null || echo 'User exists or created'
+      "
+    networks:
+      - weather_net
+
+  # Airflow Webserver
+  airflow_webserver:
+    build:
+      context: .
+      dockerfile: Dockerfile.airflow
+    container_name: airflow_webserver
+    depends_on:
+      - airflow_init
+    environment:
+      - AIRFLOW__CORE__EXECUTOR=LocalExecutor
+      - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://airflow:airflow@airflow_postgres/airflow
+      - AIRFLOW__CORE__FERNET_KEY=your_fernet_key_here
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - ./scripts:/opt/airflow/scripts
+    command: webserver
+    networks:
+      - weather_net
+
+  # Airflow Scheduler
+  airflow_scheduler:
+    build:
+      context: .
+      dockerfile: Dockerfile.airflow
+    container_name: airflow_scheduler
+    depends_on:
+      - airflow_init
+    environment:
+      - AIRFLOW__CORE__EXECUTOR=LocalExecutor
+      - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://airflow:airflow@airflow_postgres/airflow
+      - AIRFLOW__CORE__FERNET_KEY=your_fernet_key_here
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - ./scripts:/opt/airflow/scripts
+    command: scheduler
+    networks:
+      - weather_net
+
+  # Grafana - Dashboards
+  grafana:
+    image: grafana/grafana:10.4.0
+    container_name: weather_grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/dashboards:/etc/grafana/provisioning/dashboards
+    depends_on:
+      - postgres
+    networks:
+      - weather_net
+
+  # ETL Pipeline (One-time run)
+  etl:
+    build:
+      context: .
+      dockerfile: Dockerfile.etl
+    container_name: weather_etl
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    environment:
+      - OPENWEATHER_API_KEY=${OPENWEATHER_API_KEY}
+      - OPENMETEO_ENABLED=true
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_USER=weather_user
+      - POSTGRES_PASSWORD=weather_pass
+      - POSTGRES_DB=weather_db
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    volumes:
+      - ./raw_data:/app/raw_data
+    command: ["python", "-u", "etl_full.py"]
+    networks:
+      - weather_net
+
+  # Historical Backfill
+  backfill:
+    build:
+      context: .
+      dockerfile: Dockerfile.etl
+    container_name: weather_backfill
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      - OPENWEATHER_API_KEY=${OPENWEATHER_API_KEY}
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_USER=weather_user
+      - POSTGRES_PASSWORD=weather_pass
+      - POSTGRES_DB=weather_db
+    volumes:
+      - ./raw_data:/app/raw_data
+    command: ["python", "-u", "backfill.py"]
+    networks:
+      - weather_net
+
+  # dbt
+  dbt:
+    build:
+      context: .
+      dockerfile: Dockerfile.dbt
+    container_name: weather_dbt
+    depends_on:
+      - postgres
+    environment:
+      - DBT_PROFILES_DIR=/app/dbt
+    volumes:
+      - ./dbt:/app/dbt
+    command: ["dbt", "run", "--profiles-dir", "/app/dbt"]
+    networks:
+      - weather_net
+
+volumes:
+  postgres_data:
+  airflow_postgres_data:
+  grafana_data:
+
+networks:
+  weather_net:
+    driver: bridge
